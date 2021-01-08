@@ -37,6 +37,11 @@ macro_rules! upgrade_weak {
     };
 }
 
+const DEFAULT_PIPELINE: &str =
+    "videotestsrc pattern=ball is-live=true ! vp8enc deadline=1 ! rtpvp8pay pt=96 ! webrtcbin. \
+        audiotestsrc is-live=true ! opusenc ! rtpopuspay pt=97 ! webrtcbin. \
+        webrtcbin name=webrtcbin";
+
 #[derive(Debug, StructOpt)]
 struct Args {
     #[structopt(short, long, default_value = "wss://localhost:8443")]
@@ -45,6 +50,8 @@ struct Args {
     peer_id: Option<u32>,
     #[structopt(short, long)]
     agent_id: Option<u32>,
+    #[structopt(default_value = DEFAULT_PIPELINE)]
+    pipeline: Vec<String>,
 }
 
 // JSON messages we communicate with
@@ -113,11 +120,9 @@ impl App {
         anyhow::Error,
     > {
         // Create the GStreamer pipeline
-        let pipeline = gst::parse_launch(
-            "videotestsrc pattern=ball is-live=true ! vp8enc deadline=1 ! rtpvp8pay pt=96 ! webrtcbin. \
-            audiotestsrc is-live=true ! opusenc ! rtpopuspay pt=97 ! webrtcbin. \
-            webrtcbin name=webrtcbin"
-        )?;
+        let mut pipeline = args.pipeline.join(" ");
+        pipeline.push_str(" webrtcbin name=webrtc");
+        let pipeline = gst::parse_launch(pipeline.as_str())?;
 
         // Downcast from gst::Element to gst::Pipeline
         let pipeline = pipeline
@@ -126,8 +131,8 @@ impl App {
 
         // Get access to the webrtcbin by name
         let webrtcbin = pipeline
-            .get_by_name("webrtcbin")
-            .expect("can't find webrtcbin");
+            .get_by_name("webrtc")
+            .expect("can't find webrtcbin with name: webrtc");
 
         // Set some properties on webrtcbin
         webrtcbin.set_property_from_str("stun-server", STUN_SERVER);
