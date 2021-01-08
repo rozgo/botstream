@@ -1,6 +1,6 @@
 [package]
 name = "botstream"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Alex Rozgo <alex.rozgo@gmail.com>"]
 edition = "2018"
 
@@ -21,3 +21,11 @@ glib = "0.10.3"
 serde = "1"
 serde_derive = "1"
 serde_json = "1"
+
+[lib]
+name = "libbotstream"
+path = "src/lib.rs"
+
+[[bin]]
+name = "botstream"
+path = "src/bin.rs"

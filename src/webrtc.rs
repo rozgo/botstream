@@ -5,7 +5,6 @@ use rand::prelude::*;
 use structopt::StructOpt;
 
 use async_std::prelude::*;
-use async_std::task;
 use futures::channel::mpsc;
 use futures::sink::{Sink, SinkExt};
 use futures::stream::StreamExt;
@@ -43,7 +42,7 @@ const DEFAULT_PIPELINE: &str =
         webrtcbin name=webrtcbin";
 
 #[derive(Debug, StructOpt)]
-struct Args {
+pub struct Args {
     #[structopt(short, long, default_value = "wss://localhost:8443")]
     server: String,
     #[structopt(short, long)]
@@ -694,13 +693,11 @@ fn check_plugins() -> Result<(), anyhow::Error> {
     }
 }
 
-async fn async_main() -> Result<(), anyhow::Error> {
+pub async fn async_main(args: Args) -> Result<(), anyhow::Error> {
     // Initialize GStreamer first
     gst::init()?;
 
     check_plugins()?;
-
-    let args = Args::from_args();
 
     let connector = async_native_tls::TlsConnector::new().danger_accept_invalid_certs(true);
 
@@ -748,8 +745,4 @@ async fn async_main() -> Result<(), anyhow::Error> {
 
     // All good, let's run our message loop
     run(args, ws).await
-}
-
-fn main() -> Result<(), anyhow::Error> {
-    task::block_on(async_main())
 }
