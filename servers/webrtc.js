@@ -16,7 +16,7 @@ var default_peer_id;
 var rtc_configuration = {iceServers: [{urls: "stun:stun.services.mozilla.com"},
                                       {urls: "stun:stun.l.google.com:19302"}]};
 // The default constraints that will be attempted. Can be overriden by the user.
-var default_constraints = {video: false, audio: false};
+var default_constraints = {video: true, audio: true};
 
 var connect_attempts = 0;
 var peer_connection;
@@ -26,12 +26,26 @@ var ws_conn;
 var local_stream_promise;
 
 function getOurId() {
-    return 1000 //Math.floor(Math.random() * (9000 - 10) + 10).toString();
+    return 0 //Math.floor(Math.random() * (9000 - 10) + 10).toString();
 }
 
 function resetState() {
     // This will call onServerClose()
     ws_conn.close();
+}
+
+function uiSendWebsocketMessage() {
+    var textArea = document.getElementById('websocket-out');
+    var msg = { 'msg': textArea.value };
+    ws_conn.send(JSON.stringify(msg));
+    // ws_conn.send(textArea.value);
+}
+
+function uiSendDataMessage() {
+    var textArea = document.getElementById('data-out');
+    var msg = { 'msg': textArea.value };
+    send_channel.send(JSON.stringify(msg));
+    // send_channel.send(textArea.value);
 }
 
 function handleIncomingError(error) {
@@ -146,6 +160,8 @@ function onServerMessage(event) {
                     onIncomingSDP(msg.sdp);
                 } else if (msg.ice != null) {
                     onIncomingICE(msg.ice);
+                } else if (msg.msg != null) {
+                    // General message
                 } else {
                     handleIncomingError("Unknown incoming JSON: " + msg);
                 }

@@ -11,19 +11,25 @@ futures = "0.3"
 async-std = "1"
 structopt = { version = "0.3", default-features = false }
 anyhow = "1"
+libc = "0.2.82"
+derive_more = "0.99.11"
 rand = "0.7"
 async-tungstenite = { version = "0.10", features = ["async-std-runtime", "async-native-tls"] }
 async-native-tls = "0.3"
 gst = { package = "gstreamer", version = "0.16", features = ["v1_16"] }
+gst-app = { package = "gstreamer-app", version = "0.16", features = ["v1_16"] }
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.16" }
 gst-sdp = { package = "gstreamer-sdp", version = "0.16", features = ["v1_16"] }
+gst-video-sys = { package = "gstreamer-video-sys", version = "0.9.1", features = ["v1_16"] }
+gst-video = { package = "gstreamer-video", version = "0.16", features = ["v1_16"] }
 glib = "0.10.3"
 serde = "1"
 serde_derive = "1"
 serde_json = "1"
 
 [lib]
-name = "libbotstream"
+name = "botstream"
+crate-type = ["cdylib"]
 path = "src/lib.rs"
 
 [[bin]]

@@ -1,16 +1,10 @@
 use std::sync::{Arc, Mutex, Weak};
 
-use rand::prelude::*;
-
-use structopt::StructOpt;
-
-use async_std::prelude::*;
 use futures::channel::mpsc;
 use futures::sink::{Sink, SinkExt};
 use futures::stream::StreamExt;
 
 use async_tungstenite::tungstenite;
-use tungstenite::Error as WsError;
 use tungstenite::Message as WsMessage;
 
 use gst::gst_element_error;
@@ -19,6 +13,13 @@ use gst::prelude::*;
 use serde_derive::{Deserialize, Serialize};
 
 use anyhow::{anyhow, bail, Context};
+use derive_more::{Display, Error};
+
+use crate::launch::Args;
+
+#[derive(Debug, Display, Error)]
+#[display(fmt = "Missing element {}", _0)]
+pub struct MissingElement(#[error(not(source))] &'static str);
 
 const STUN_SERVER: &str = "stun://stun.l.google.com:19302";
 
@@ -36,23 +37,6 @@ macro_rules! upgrade_weak {
     };
 }
 
-const DEFAULT_PIPELINE: &str =
-    "videotestsrc pattern=ball is-live=true ! vp8enc deadline=1 ! rtpvp8pay pt=96 ! webrtcbin. \
-        audiotestsrc is-live=true ! opusenc ! rtpopuspay pt=97 ! webrtcbin. \
-        webrtcbin name=webrtcbin";
-
-#[derive(Debug, StructOpt)]
-pub struct Args {
-    #[structopt(short, long, default_value = "wss://localhost:8443")]
-    server: String,
-    #[structopt(short, long)]
-    peer_id: Option<u32>,
-    #[structopt(short, long)]
-    agent_id: Option<u32>,
-    #[structopt(default_value = DEFAULT_PIPELINE)]
-    pipeline: Vec<String>,
-}
-
 // JSON messages we communicate with
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -67,11 +51,14 @@ enum JsonMsg {
         type_: String,
         sdp: String,
     },
+    Msg {
+        msg: String,
+    },
 }
 
 // Strong reference to our application state
 #[derive(Debug, Clone)]
-struct App(Arc<AppInner>);
+pub struct App(Arc<AppInner>);
 
 // Weak reference to our application state
 #[derive(Debug, Clone)]
@@ -79,11 +66,15 @@ struct AppWeak(Weak<AppInner>);
 
 // Actual application state
 #[derive(Debug)]
-struct AppInner {
+pub struct AppInner {
     args: Args,
     pipeline: gst::Pipeline,
     webrtcbin: gst::Element,
-    send_msg_tx: Mutex<mpsc::UnboundedSender<WsMessage>>,
+    send_ws_msg_tx: Mutex<mpsc::UnboundedSender<WsMessage>>,
+    pub send_data_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    pub send_data_tx: Mutex<Option<mpsc::UnboundedSender<String>>>,
+    recv_data_tx: Mutex<std::sync::mpsc::Sender<String>>,
+    recv_msg_tx: Mutex<std::sync::mpsc::Sender<String>>,
 }
 
 // To be able to access the App's fields directly
@@ -108,26 +99,13 @@ impl App {
         AppWeak(Arc::downgrade(&self.0))
     }
 
-    fn new(
+    pub fn new(
         args: Args,
-    ) -> Result<
-        (
-            Self,
-            impl Stream<Item = gst::Message>,
-            impl Stream<Item = WsMessage>,
-        ),
-        anyhow::Error,
-    > {
-        // Create the GStreamer pipeline
-        let mut pipeline = args.pipeline.join(" ");
-        pipeline.push_str(" webrtcbin name=webrtc");
-        let pipeline = gst::parse_launch(pipeline.as_str())?;
-
-        // Downcast from gst::Element to gst::Pipeline
-        let pipeline = pipeline
-            .downcast::<gst::Pipeline>()
-            .expect("not a pipeline");
-
+        pipeline: gst::Pipeline,
+        send_ws_msg_tx: mpsc::UnboundedSender<WsMessage>,
+        recv_data_tx: std::sync::mpsc::Sender<String>,
+        recv_msg_tx: std::sync::mpsc::Sender<String>,
+    ) -> Result<Self, anyhow::Error> {
         // Get access to the webrtcbin by name
         let webrtcbin = pipeline
             .get_by_name("webrtc")
@@ -137,18 +115,15 @@ impl App {
         webrtcbin.set_property_from_str("stun-server", STUN_SERVER);
         webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
 
-        // Create a stream for handling the GStreamer message asynchronously
-        let bus = pipeline.get_bus().unwrap();
-        let send_gst_msg_rx = bus.stream();
-
-        // Channel for outgoing WebSocket messages from other threads
-        let (send_ws_msg_tx, send_ws_msg_rx) = mpsc::unbounded::<WsMessage>();
-
         let app = App(Arc::new(AppInner {
             args,
             pipeline,
             webrtcbin,
-            send_msg_tx: Mutex::new(send_ws_msg_tx),
+            send_ws_msg_tx: Mutex::new(send_ws_msg_tx),
+            send_data_rx: Mutex::new(None),
+            send_data_tx: Mutex::new(None),
+            recv_data_tx: Mutex::new(recv_data_tx),
+            recv_msg_tx: Mutex::new(recv_msg_tx),
         }));
 
         // Connect to on-negotiation-needed to handle sending an Offer
@@ -197,8 +172,10 @@ impl App {
             })
             .unwrap();
 
+        // Ready state is required for connecitng data channels
         app.pipeline.set_state(gst::State::Ready).unwrap();
 
+        // Create data channels
         let data_channel = app
             .webrtcbin
             .emit(
@@ -212,6 +189,7 @@ impl App {
         app.connect_data_channel_signals(&data_channel.clone())
             .unwrap();
 
+        // Handle data channel events
         let app_clone = app.downgrade();
         app.webrtcbin
             .connect("on-data-channel", false, move |values| {
@@ -254,28 +232,42 @@ impl App {
                 .expect("Couldn't set pipeline to Playing");
         });
 
-        Ok((app, send_gst_msg_rx, send_ws_msg_rx))
+        Ok(app)
     }
 
     // Handle WebSocket messages, both our own as well as WebSocket protocol messages
-    fn handle_websocket_message(&self, msg: &str) -> Result<(), anyhow::Error> {
+    pub fn handle_websocket_message(&self, msg: &str) -> Result<(), anyhow::Error> {
         if msg.starts_with("ERROR") {
             bail!("Got error message: {}", msg);
         }
 
-        let json_msg: JsonMsg = serde_json::from_str(msg)?;
-
-        match json_msg {
-            JsonMsg::Sdp { type_, sdp } => self.handle_sdp(&type_, &sdp),
-            JsonMsg::Ice {
-                sdp_mline_index,
-                candidate,
-            } => self.handle_ice(sdp_mline_index, &candidate),
+        if let Ok(json_msg) = serde_json::from_str::<JsonMsg>(msg) {
+            match json_msg {
+                JsonMsg::Sdp { type_, sdp } => self.handle_sdp(&type_, &sdp),
+                JsonMsg::Ice {
+                    sdp_mline_index,
+                    candidate,
+                } => self.handle_ice(sdp_mline_index, &candidate),
+                JsonMsg::Msg { msg } => self.handle_msg(&msg),
+            }
+        } else {
+            self.handle_msg(&msg)
         }
+
+        // let json_msg = serde_json::from_str::<JsonMsg>(msg).unwrap();
+
+        // match json_msg {
+        //     JsonMsg::Sdp { type_, sdp } => self.handle_sdp(&type_, &sdp),
+        //     JsonMsg::Ice {
+        //         sdp_mline_index,
+        //         candidate,
+        //     } => self.handle_ice(sdp_mline_index, &candidate),
+        //     JsonMsg::Msg { msg } => self.handle_msg(&msg),
+        // }
     }
 
     // Handle GStreamer messages coming from the pipeline
-    fn handle_pipeline_message(&self, message: &gst::Message) -> Result<(), anyhow::Error> {
+    pub fn handle_pipeline_message(&self, message: &gst::Message) -> Result<(), anyhow::Error> {
         use gst::message::MessageView;
 
         match message.view() {
@@ -359,7 +351,7 @@ impl App {
         })
         .unwrap();
 
-        self.send_msg_tx
+        self.send_ws_msg_tx
             .lock()
             .unwrap()
             .unbounded_send(WsMessage::Text(message))
@@ -405,11 +397,18 @@ impl App {
         })
         .unwrap();
 
-        self.send_msg_tx
+        self.send_ws_msg_tx
             .lock()
             .unwrap()
             .unbounded_send(WsMessage::Text(message))
             .with_context(|| format!("Failed to send SDP answer"))?;
+
+        Ok(())
+    }
+
+    // Handle out of signal message
+    fn handle_msg(&self, msg: &str) -> Result<(), anyhow::Error> {
+        self.recv_msg_tx.lock().unwrap().send(msg.to_string())?;
 
         Ok(())
     }
@@ -494,7 +493,7 @@ impl App {
         })
         .unwrap();
 
-        self.send_msg_tx
+        self.send_ws_msg_tx
             .lock()
             .unwrap()
             .unbounded_send(WsMessage::Text(message))
@@ -573,20 +572,46 @@ impl App {
             .as_ref()
             .expect("Failed to extract data channel.");
 
+        let app_clone = self.downgrade();
         data_channel
             .connect("on-open", false, move |values| {
                 let data_channel = values[0].get::<glib::Object>().unwrap().unwrap();
                 data_channel
                     .emit("send-string", &[&"Hi from BotStream!"])
                     .unwrap();
+                let app = upgrade_weak!(app_clone, None);
+
+                // let (mut tx, rx) = std::sync::mpsc::channel::<String>();
+                let (tx, rx) = mpsc::unbounded::<String>();
+                let p = rx.map(|msg| {
+                    data_channel
+                    .emit("send-string", &[&msg])
+                    .unwrap();
+                    msg
+                });
+                let pp: mpsc::UnboundedReceiver<String> = p.into_inner();
+
+                let mut mtx = app.send_data_tx.lock().unwrap();
+                *mtx = Some(tx);
+
+                let mut mrx = app.send_data_rx.lock().unwrap();
+                *mrx = Some(pp);
+
                 None
             })
             .unwrap();
 
+        let app_clone = self.downgrade();
         data_channel
             .connect("on-message-string", false, move |values| {
                 let message = values[1].get::<String>().unwrap().unwrap();
-                println!("Received: {}", message);
+                let app = upgrade_weak!(app_clone, None);
+                app.recv_data_tx
+                    .lock()
+                    .unwrap()
+                    .send(message.clone())
+                    .with_context(|| format!("Failed to send data message"))
+                    .unwrap_or_default();
                 None
             })
             .unwrap();
@@ -601,148 +626,4 @@ impl Drop for AppInner {
     fn drop(&mut self) {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
-}
-
-async fn run(
-    args: Args,
-    ws: impl Sink<WsMessage, Error = WsError> + Stream<Item = Result<WsMessage, WsError>>,
-) -> Result<(), anyhow::Error> {
-    // Split the websocket into the Sink and Stream
-    let (mut ws_sink, ws_stream) = ws.split();
-    // Fuse the Stream, required for the select macro
-    let mut ws_stream = ws_stream.fuse();
-
-    // Create our application state
-    let (app, send_gst_msg_rx, send_ws_msg_rx) = App::new(args)?;
-
-    let mut send_gst_msg_rx = send_gst_msg_rx.fuse();
-    let mut send_ws_msg_rx = send_ws_msg_rx.fuse();
-
-    // And now let's start our message loop
-    loop {
-        let ws_msg = futures::select! {
-            // Handle the WebSocket messages here
-            ws_msg = ws_stream.select_next_some() => {
-                match ws_msg? {
-                    WsMessage::Close(_) => {
-                        println!("peer disconnected");
-                        break
-                    },
-                    WsMessage::Ping(data) => Some(WsMessage::Pong(data)),
-                    WsMessage::Pong(_) => None,
-                    WsMessage::Binary(_) => None,
-                    WsMessage::Text(text) => {
-                        app.handle_websocket_message(&text)?;
-                        None
-                    },
-                }
-            },
-            // Pass the GStreamer messages to the application control logic
-            gst_msg = send_gst_msg_rx.select_next_some() => {
-                app.handle_pipeline_message(&gst_msg)?;
-                None
-            },
-            // Handle WebSocket messages we created asynchronously
-            // to send them out now
-            ws_msg = send_ws_msg_rx.select_next_some() => Some(ws_msg),
-            // Once we're done, break the loop and return
-            complete => break,
-        };
-
-        // If there's a message to send out, do so now
-        if let Some(ws_msg) = ws_msg {
-            ws_sink.send(ws_msg).await?;
-        }
-    }
-
-    Ok(())
-}
-
-// Check if all GStreamer plugins we require are available
-fn check_plugins() -> Result<(), anyhow::Error> {
-    let needed = [
-        "videotestsrc",
-        "audiotestsrc",
-        "videoconvert",
-        "audioconvert",
-        "autodetect",
-        "opus",
-        "vpx",
-        "webrtc",
-        "nice",
-        "dtls",
-        "srtp",
-        "rtpmanager",
-        "rtp",
-        "playback",
-        "videoscale",
-        "audioresample",
-    ];
-
-    let registry = gst::Registry::get();
-    let missing = needed
-        .iter()
-        .filter(|n| registry.find_plugin(n).is_none())
-        .cloned()
-        .collect::<Vec<_>>();
-
-    if !missing.is_empty() {
-        bail!("Missing plugins: {:?}", missing);
-    } else {
-        Ok(())
-    }
-}
-
-pub async fn async_main(args: Args) -> Result<(), anyhow::Error> {
-    // Initialize GStreamer first
-    gst::init()?;
-
-    check_plugins()?;
-
-    let connector = async_native_tls::TlsConnector::new().danger_accept_invalid_certs(true);
-
-    let (mut ws, _) = async_tungstenite::async_std::connect_async_with_tls_connector(
-        &args.server,
-        Some(connector),
-    )
-    .await?;
-
-    println!("connected");
-
-    // Say HELLO to the server and see if it replies with HELLO
-    let our_id = if let Some(our_id) = args.agent_id {
-        our_id
-    } else {
-        rand::thread_rng().gen_range(10, 10_000)
-    };
-    println!("Registering id {} with server", our_id);
-    ws.send(WsMessage::Text(format!("HELLO {}", our_id)))
-        .await?;
-
-    let msg = ws
-        .next()
-        .await
-        .ok_or_else(|| anyhow!("didn't receive anything"))??;
-
-    if msg != WsMessage::Text("HELLO".into()) {
-        bail!("server didn't say HELLO");
-    }
-
-    if let Some(peer_id) = args.peer_id {
-        // Join the given session
-        ws.send(WsMessage::Text(format!("SESSION {}", peer_id)))
-            .await?;
-
-        let msg = ws
-            .next()
-            .await
-            .ok_or_else(|| anyhow!("didn't receive anything"))??;
-
-        if msg != WsMessage::Text("SESSION_OK".into()) {
-            bail!("server error: {:?}", msg);
-        }
-    }
-
-    // All good, let's run our message loop
-    run(args, ws).await
 }

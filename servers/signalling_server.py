@@ -207,7 +207,12 @@ class WebRTCSimpleServer(object):
                     print('room {}: {} -> {}: {}'.format(room_id, uid, pid, msg))
                     await wsp.send(msg)
             else:
-                print('Ignoring unknown message {!r} from {!r}'.format(msg, uid))
+                print('Forwarding unknown message {!r} from {!r}'.format(msg, uid))
+                for pid in self.peers:
+                    if pid == uid:
+                        continue
+                    wsp, paddr, _ = self.peers[pid]
+                    await wsp.send(msg)
 
     async def hello_peer(self, ws):
         '''
