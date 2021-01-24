@@ -1,4 +1,5 @@
 # WebRTC Distributed Agents
+Rust webrtc client library based on GStreamer pipelines. With C/C++ API. Prototype concept.
 
 ## Dependencies
 
@@ -10,22 +11,28 @@ sudo apt-get install -y gstreamer1.0-tools gstreamer1.0-nice gstreamer1.0-plugin
 ### Rust
 ```
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
 ```
 
 ### cbindgen
+
+Install
 ```
 cargo install --force cbindgen
 ```
 
-### Python
+Generate C/C++ FFI API
 ```
-pip install websockets
+cbindgen --config cbindgen.toml --crate botstream --output ./include/botstream_ffi.h
 ```
 
 ## Build
 ```
 cargo build --release
+```
+
+### Python
+```
+pip install websockets
 ```
 
 ## Quick test
