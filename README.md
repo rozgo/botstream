@@ -1,4 +1,4 @@
-# WebRTC Distributed Agents
+# WebRTC Client for C/C++ bots
 Rust webrtc client library based on GStreamer pipelines. With C/C++ API. Prototype concept.
 
 ## Dependencies
