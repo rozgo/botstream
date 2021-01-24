@@ -264,15 +264,15 @@ const handleDataChannelOpen = (event) =>{
 const handleDataChannelMessageReceived = (event) =>{
     console.log("dataChannel.OnMessage:", event, event.data.type);
 
-    // setStatus("Received data channel message");
-    // if (typeof event.data === 'string' || event.data instanceof String) {
-    //     console.log('Incoming string message: ' + event.data);
-    //     textarea = document.getElementById("text")
-    //     textarea.value = textarea.value + '\n' + event.data
-    // } else {
-    //     console.log('Incoming data message');
-    // }
-    // send_channel.send("Hi! (from browser)");
+    setStatus("Received data channel message");
+    if (typeof event.data === 'string' || event.data instanceof String) {
+        console.log('Incoming string message: ' + event.data);
+        textarea = document.getElementById("text")
+        textarea.value = textarea.value + '\n' + event.data
+    } else {
+        console.log('Incoming data message');
+    }
+    send_channel.send("Hi! (from browser)");
 };
 
 const handleDataChannelError = (error) =>{
