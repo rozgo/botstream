@@ -18,6 +18,16 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install --force cbindgen
 ```
 
+### Python
+```
+pip install websockets
+```
+
+## Build
+```
+cargo build --release
+```
+
 ## Quick test
 ```
 ./launch_servers.sh
@@ -26,13 +36,13 @@ cargo install --force cbindgen
 
 ## Launch agent with custom pipeline
 ```
-cargo run -- --agent-id 9000 --peer-id 1000 \
+cargo run -- --agent-id 9000 --peer-id 0 \
     "videotestsrc pattern=snow is-live=true ! vp8enc deadline=1 ! rtpvp8pay pt=96 ! webrtc." \
     "audiotestsrc is-live=true ! opusenc ! rtpopuspay pt=97 ! webrtc."
 ```
 
 ```
-cargo run -- --agent-id 9000 --peer-id 1000  \
+cargo run -- --agent-id 9000 --peer-id 0  \
     "video. ! videoconvert  ! vp8enc deadline=1 ! rtpvp8pay pt=96 ! webrtc."  \
     "audiotestsrc is-live=true ! opusenc ! rtpopuspay pt=97 ! webrtc."
 ```

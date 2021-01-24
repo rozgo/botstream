@@ -2,11 +2,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 
 use futures::channel::mpsc;
-use futures::sink::{Sink, SinkExt};
 use futures::stream::StreamExt;
 
 use async_tungstenite::tungstenite;
-use glib::Object;
 use tungstenite::Message as WsMessage;
 
 use gst::gst_element_error;
@@ -95,8 +93,6 @@ impl AppWeak {
         self.0.upgrade().map(App)
     }
 }
-
-pub struct DataChannel(glib::Object);
 
 impl App {
     // Downgrade the strong reference to a weak reference
@@ -286,17 +282,6 @@ impl App {
         } else {
             self.handle_msg(&msg)
         }
-
-        // let json_msg = serde_json::from_str::<JsonMsg>(msg).unwrap();
-
-        // match json_msg {
-        //     JsonMsg::Sdp { type_, sdp } => self.handle_sdp(&type_, &sdp),
-        //     JsonMsg::Ice {
-        //         sdp_mline_index,
-        //         candidate,
-        //     } => self.handle_ice(sdp_mline_index, &candidate),
-        //     JsonMsg::Msg { msg } => self.handle_msg(&msg),
-        // }
     }
 
     // Handle GStreamer messages coming from the pipeline
@@ -605,39 +590,12 @@ impl App {
             .as_ref()
             .expect("Failed to extract data channel.");
 
-        let app_clone = self.downgrade();
         data_channel
             .connect("on-open", false, move |values| {
-                // let data_channel = values[0].get::<glib::Object>().unwrap().unwrap();
-                // data_channel
-                //     .emit("send-string", &[&"Hi from BotStream!"])
-                //     .unwrap();
-                // let app = upgrade_weak!(app_clone, None);
-
-                // let (tx, rx) = mpsc::unbounded::<String>();
-                // let p = rx.map(|msg| {
-                //     data_channel
-                //     .emit("send-string", &[&msg])
-                //     .unwrap();
-                //     msg
-                // });
-                // let pp: mpsc::UnboundedReceiver<String> = p.into_inner();
-
-                // let mut mtx = app.send_data_tx.lock().unwrap();
-                // *mtx = Some(tx);
-
-                // let mut mrx = app.send_data_rx.lock().unwrap();
-                // *mrx = Some(pp);
-
-                // let callback = move |msg: String| {
-                //     data_channel.clone()
-                //     .emit("send-string", &[&msg])
-                //     .unwrap();
-                // };
-
-                // let mut mtx = app.callback_data_tx.lock().unwrap();
-                // *mtx = Box::pin(callback.clone());
-
+                let data_channel = values[0].get::<glib::Object>().unwrap().unwrap();
+                data_channel
+                    .emit("send-string", &[&"Hi from BotStream!"])
+                    .unwrap();
                 None
             })
             .unwrap();

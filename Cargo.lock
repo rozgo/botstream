@@ -202,7 +202,6 @@ dependencies = [
  "async-tungstenite",
  "derive_more",
  "force-send-sync",
- "fragile",
  "futures",
  "glib",
  "gstreamer",
@@ -397,12 +396,6 @@ dependencies = [
  "matches",
  "percent-encoding",
 ]
-
-[[package]]
-name = "fragile"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69a039c3498dc930fe810151a34ba0c1c70b02b8625035592e74432f678591f2"
 
 [[package]]
 name = "futures"

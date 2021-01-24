@@ -1,7 +1,5 @@
 use async_std::task;
 use derive_more::{Display, Error};
-use glib::prelude::*;
-use gst::prelude::*;
 use launch::*;
 use libc::c_char;
 use std::ffi::CStr;
@@ -38,13 +36,16 @@ pub extern "C" fn bs_init() {
     gst::init().unwrap()
 }
 
-// Example config:
-// static CONFIG: &str = r#"{
-//     "server": "wss://localhost:8443",
-//     "peer_id": 1000,
-//     "agent_id": 9000,
-//     "pipeline": ["video. ! videoconvert  ! vp8enc deadline=1 ! rtpvp8pay pt=96 ! webrtc. audiotestsrc is-live=true ! opusenc ! rtpopuspay pt=97 ! webrtc."]
-// }"#;
+/// Example config:
+/// ```
+/// static CONFIG: &str = r#"{
+///     "server": "wss://localhost:8443",
+///     "peer_id": 1000,
+///     "agent_id": 9000,
+///     "pipeline": ["video. ! videoconvert  ! vp8enc deadline=1 ! rtpvp8pay pt=96 ! webrtc. audiotestsrc is-live=true ! opusenc ! rtpopuspay pt=97 ! webrtc."]
+/// }"#;
+/// let _args = serde_json::from_str(CONFIG)?;
+/// ```
 
 #[no_mangle]
 pub extern "C" fn bs_start(

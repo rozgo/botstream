@@ -1,4 +1,3 @@
-use mpsc::{UnboundedReceiver, UnboundedSender};
 use rand::prelude::*;
 
 use glib::prelude::*;
@@ -63,17 +62,18 @@ async fn run(
 
     // Channel for outgoing WebSocket messages from other threads
     let (send_ws_msg_tx, send_ws_msg_rx) = mpsc::unbounded::<WsMessage>();
+    let mut send_ws_msg_rx = send_ws_msg_rx.fuse();
 
     // Create a stream for handling the GStreamer message asynchronously
     let bus = pipeline.get_bus().unwrap();
     let send_gst_msg_rx = bus.stream();
-
     let mut send_gst_msg_rx = send_gst_msg_rx.fuse();
-    let mut send_ws_msg_rx = send_ws_msg_rx.fuse();
 
+    // Fuse streams for handling host messages
     let mut send_data_rx = send_data_rx.fuse();
     let mut send_msg_rx = send_msg_rx.fuse();
 
+    // Create webrtc app
     let (app, (mut data_tx, data_rx)) = webrtc::App::new(
         args.clone(),
         pipeline,
@@ -82,27 +82,11 @@ async fn run(
         recv_msg_tx,
     )
     .unwrap();
+
+    // Stream for polling outgoing data channel stream
     let mut data_rx = data_rx.fuse();
 
-    // let (nop_data_tx, nop_data_rx) = mpsc::unbounded::<String>();
-
-    // let mut data_setup = false;
-    // let mut send_data_rx_internal = nop_data_rx.fuse();
-
-    // let s = futures::stream::iter(vec!['a', 'b', 'c']);
-    // let (stx, srx) = s.split();
-
-    // let mut send_data_rx_internal: futures::stream::Fuse<futures::stream::Empty<()>> = futures::stream::empty::<()>().fuse();
-
-    // let mut send_data_rx_internal = Box::pin(futures::stream::empty::<()>().fuse());
-
-    // And now let's start our message loop
     loop {
-        // let mut mtx = app.send_data_rx.lock().unwrap();
-        // if mtx.is_some() {
-        //     let rx = std::mem::replace(&mut *mtx, None).unwrap();
-        // }
-
         let msg: Message = futures::select! {
             // Handle the WebSocket messages here
             ws_msg = ws_stream.select_next_some() => {
@@ -140,18 +124,6 @@ async fn run(
         // If there's a data message to send out, do so now
         if let Message::Data(msg) = msg {
             data_tx.send(msg).await?;
-            // if let Some(tx) = app
-            //     .send_data_tx
-            //     .lock()
-            //     .unwrap()
-            //     .as_mut()
-            //     .and_then(|tx| Some(tx))
-            // {
-            //     tx.start_send(msg).unwrap();
-
-            //     // app.send_data_rx.lock().unwrap().as_mut().unwrap().
-            //     println!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-            // }
         }
         // If there's a message to send out, do so now
         else if let Message::Ws(ws_msg) = msg {
@@ -207,6 +179,8 @@ pub async fn async_main(
     send_data_rx: mpsc::UnboundedReceiver<String>,
     send_msg_rx: mpsc::UnboundedReceiver<WsMessage>,
 ) -> Result<(), anyhow::Error> {
+    check_plugins()?;
+
     // Specify the format we want to provide as application into the pipeline
     // by creating a video info with the given format and creating caps from it for the appsrc element.
     let format = match video_config.format {
@@ -227,16 +201,16 @@ pub async fn async_main(
         .downcast::<gst::Pipeline>()
         .expect("not a pipeline");
 
-    let videosrc = pipeline
-        .get_by_name("video")
-        .expect("can't find video appsrc");
-    let mut videosrc = videosrc
-        .dynamic_cast::<gst_app::AppSrc>()
-        .expect("Source element is expected to be an appsrc!");
-    prepare_appsrc(obj, &mut videosrc, &video_info, on_need_data);
+    // Setup video src if 'video.' element present
+    if let Some(videosrc) = pipeline.get_by_name("video") {
+        let mut videosrc = videosrc
+            .dynamic_cast::<gst_app::AppSrc>()
+            .expect("Source element is expected to be an appsrc!");
+        prepare_appsrc(obj, &mut videosrc, &video_info, on_need_data);
+    }
 
+    // Safe connection to signal server
     let connector = async_native_tls::TlsConnector::new().danger_accept_invalid_certs(true);
-
     let (mut ws, _) = async_tungstenite::async_std::connect_async_with_tls_connector(
         &args.server,
         Some(connector),

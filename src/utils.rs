@@ -1,5 +1,3 @@
-
-
 #[repr(C)]
 pub enum BsVideoFormat {
     RGBA8,
