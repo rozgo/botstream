@@ -9,8 +9,11 @@ use futures::channel::mpsc;
 use async_tungstenite::tungstenite;
 use tungstenite::Message as WsMessage;
 
+mod utils;
 mod launch;
 mod webrtc;
+
+use crate::{utils::BsVideoConfig};
 
 // static CONFIG: &str = r#"{
 //     "server": "wss://localhost:8443",
@@ -28,23 +31,6 @@ fn main() -> Result<(), anyhow::Error> {
 
     check_plugins()?;
 
-    // Create the GStreamer pipeline
-    let mut pipeline = args.pipeline.join(" ");
-    prime_pipeline(&mut pipeline);
-    let pipeline = gst::parse_launch(pipeline.as_str()).unwrap();
-
-    // Downcast from gst::Element to gst::Pipeline
-    let pipeline = pipeline
-        .downcast::<gst::Pipeline>()
-        .expect("not a pipeline");
-
-    if let Some(videosrc) = pipeline.get_by_name("video") {
-        let mut videosrc = videosrc
-            .dynamic_cast::<gst_app::AppSrc>()
-            .expect("Source element is expected to be an appsrc!");
-        prepare_appsrc(&mut videosrc);
-    }
-
     // Data channel
     let (recv_data_tx, recv_data_rx) = channel::<String>();
     let (send_data_tx, send_data_rx) = mpsc::unbounded::<String>();
@@ -53,27 +39,20 @@ fn main() -> Result<(), anyhow::Error> {
     let (recv_msg_tx, recv_msg_rx) = channel::<String>();
     let (send_msg_tx, send_msg_rx) = mpsc::unbounded::<WsMessage>();
 
-    // Create a stream for handling the GStreamer message asynchronously
-    let bus = pipeline.get_bus().unwrap();
-    let send_gst_msg_rx = bus.stream();
-
-    // Channel for outgoing WebSocket messages from other threads
-    let (send_ws_msg_tx, send_ws_msg_rx) = mpsc::unbounded::<WsMessage>();
-
-    let app = webrtc::App::new(
-        args.clone(),
-        pipeline,
-        send_ws_msg_tx,
-        recv_data_tx,
-        recv_msg_tx,
-    )
-    .unwrap();
+    let video_config = BsVideoConfig {
+        format: utils::BsVideoFormat::RGBA8,
+        framerate: 10,
+        width: 256,
+        height: 256,
+    };
 
     task::block_on(async_main(
         args.clone(),
-        app,
-        send_gst_msg_rx,
-        send_ws_msg_rx,
+        video_config,
+        0,
+        None,
+        recv_data_tx,
+        recv_msg_tx,
         send_data_rx,
         send_msg_rx,
     ))

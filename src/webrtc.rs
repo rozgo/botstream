@@ -1,3 +1,4 @@
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 
 use futures::channel::mpsc;
@@ -5,6 +6,7 @@ use futures::sink::{Sink, SinkExt};
 use futures::stream::StreamExt;
 
 use async_tungstenite::tungstenite;
+use glib::Object;
 use tungstenite::Message as WsMessage;
 
 use gst::gst_element_error;
@@ -57,15 +59,15 @@ enum JsonMsg {
 }
 
 // Strong reference to our application state
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct App(Arc<AppInner>);
 
 // Weak reference to our application state
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct AppWeak(Weak<AppInner>);
 
 // Actual application state
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct AppInner {
     args: Args,
     pipeline: gst::Pipeline,
@@ -73,6 +75,7 @@ pub struct AppInner {
     send_ws_msg_tx: Mutex<mpsc::UnboundedSender<WsMessage>>,
     pub send_data_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
     pub send_data_tx: Mutex<Option<mpsc::UnboundedSender<String>>>,
+    pub callback_data_tx: Mutex<Pin<Box<dyn Fn(String) + Send>>>,
     recv_data_tx: Mutex<std::sync::mpsc::Sender<String>>,
     recv_msg_tx: Mutex<std::sync::mpsc::Sender<String>>,
 }
@@ -93,6 +96,8 @@ impl AppWeak {
     }
 }
 
+pub struct DataChannel(glib::Object);
+
 impl App {
     // Downgrade the strong reference to a weak reference
     fn downgrade(&self) -> AppWeak {
@@ -105,7 +110,16 @@ impl App {
         send_ws_msg_tx: mpsc::UnboundedSender<WsMessage>,
         recv_data_tx: std::sync::mpsc::Sender<String>,
         recv_msg_tx: std::sync::mpsc::Sender<String>,
-    ) -> Result<Self, anyhow::Error> {
+    ) -> Result<
+        (
+            Self,
+            (
+                mpsc::UnboundedSender<String>,
+                impl futures::stream::Stream<Item = String> + Send,
+            ),
+        ),
+        anyhow::Error,
+    > {
         // Get access to the webrtcbin by name
         let webrtcbin = pipeline
             .get_by_name("webrtc")
@@ -122,6 +136,7 @@ impl App {
             send_ws_msg_tx: Mutex::new(send_ws_msg_tx),
             send_data_rx: Mutex::new(None),
             send_data_tx: Mutex::new(None),
+            callback_data_tx: Mutex::new(Box::pin(|_| {})),
             recv_data_tx: Mutex::new(recv_data_tx),
             recv_msg_tx: Mutex::new(recv_msg_tx),
         }));
@@ -189,6 +204,24 @@ impl App {
         app.connect_data_channel_signals(&data_channel.clone())
             .unwrap();
 
+        let (data_tx, data_rx) = mpsc::unbounded::<String>();
+        let data_rx = if let Some(data_channel) = data_channel {
+            let data_channel = Arc::new(Mutex::new(data_channel));
+            let data_channel = unsafe { force_send_sync::Send::new(data_channel) };
+            data_rx
+                .map(move |msg| {
+                    data_channel
+                        .lock()
+                        .unwrap()
+                        .emit("send-string", &[&msg])
+                        .unwrap();
+                    msg
+                })
+                .boxed()
+        } else {
+            data_rx.boxed()
+        };
+
         // Handle data channel events
         let app_clone = app.downgrade();
         app.webrtcbin
@@ -232,7 +265,7 @@ impl App {
                 .expect("Couldn't set pipeline to Playing");
         });
 
-        Ok(app)
+        Ok((app, (data_tx, data_rx)))
     }
 
     // Handle WebSocket messages, both our own as well as WebSocket protocol messages
@@ -575,27 +608,35 @@ impl App {
         let app_clone = self.downgrade();
         data_channel
             .connect("on-open", false, move |values| {
-                let data_channel = values[0].get::<glib::Object>().unwrap().unwrap();
-                data_channel
-                    .emit("send-string", &[&"Hi from BotStream!"])
-                    .unwrap();
-                let app = upgrade_weak!(app_clone, None);
+                // let data_channel = values[0].get::<glib::Object>().unwrap().unwrap();
+                // data_channel
+                //     .emit("send-string", &[&"Hi from BotStream!"])
+                //     .unwrap();
+                // let app = upgrade_weak!(app_clone, None);
 
-                // let (mut tx, rx) = std::sync::mpsc::channel::<String>();
-                let (tx, rx) = mpsc::unbounded::<String>();
-                let p = rx.map(|msg| {
-                    data_channel
-                    .emit("send-string", &[&msg])
-                    .unwrap();
-                    msg
-                });
-                let pp: mpsc::UnboundedReceiver<String> = p.into_inner();
+                // let (tx, rx) = mpsc::unbounded::<String>();
+                // let p = rx.map(|msg| {
+                //     data_channel
+                //     .emit("send-string", &[&msg])
+                //     .unwrap();
+                //     msg
+                // });
+                // let pp: mpsc::UnboundedReceiver<String> = p.into_inner();
 
-                let mut mtx = app.send_data_tx.lock().unwrap();
-                *mtx = Some(tx);
+                // let mut mtx = app.send_data_tx.lock().unwrap();
+                // *mtx = Some(tx);
 
-                let mut mrx = app.send_data_rx.lock().unwrap();
-                *mrx = Some(pp);
+                // let mut mrx = app.send_data_rx.lock().unwrap();
+                // *mrx = Some(pp);
+
+                // let callback = move |msg: String| {
+                //     data_channel.clone()
+                //     .emit("send-string", &[&msg])
+                //     .unwrap();
+                // };
+
+                // let mut mtx = app.callback_data_tx.lock().unwrap();
+                // *mtx = Box::pin(callback.clone());
 
                 None
             })
